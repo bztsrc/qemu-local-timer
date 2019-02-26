@@ -209,6 +209,38 @@ static void bcm2836_control_local_timer_tick(void *opaque)
     }
 }
 
+static void bcm2836_control_local_timer_control(void *opaque, uint32_t val)
+{
+    BCM2836ControlState *s = opaque;
+
+    s->period = LOCALTIMER_VALUE(val);
+    if (val & LOCALTIMER_INTENABLE) {
+        if (!s->timer) {
+            s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                bcm2836_control_local_timer_tick, s);
+        }
+        bcm2836_control_local_timer_set_next(s);
+    } else {
+        if (s->timer) {
+            timer_del(s->timer);
+            s->timer = NULL;
+        }
+        s->triggered = 0;
+    }
+}
+
+static void bcm2836_control_local_timer_ack(void *opaque, uint32_t val)
+{
+    BCM2836ControlState *s = opaque;
+
+    if (val & LOCALTIMER_INTFLAG) {
+        s->triggered = 0;
+    }
+    if (val & LOCALTIMER_RELOAD) {
+        bcm2836_control_local_timer_set_next(s);
+    }
+}
+
 static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
 {
     BCM2836ControlState *s = opaque;
@@ -220,7 +252,8 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
     } else if (offset == REG_LOCALTIMERROUTING) {
         return s->route_localtimer;
     } else if (offset == REG_LOCALTIMERCONTROL) {
-        return s->period | (s->timer ? LOCALTIMER_ENABLE | LOCALTIMER_INTENABLE : 0) |
+        return s->period |
+            (s->timer ? LOCALTIMER_ENABLE | LOCALTIMER_INTENABLE : 0) |
             (s->triggered ? LOCALTIMER_INTFLAG : 0);
     } else if (offset == REG_LOCALTIMERACK) {
         return 0;
@@ -252,27 +285,9 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
     } else if (offset == REG_LOCALTIMERROUTING) {
         s->route_localtimer = val & 7;
     } else if (offset == REG_LOCALTIMERCONTROL) {
-        s->period = LOCALTIMER_VALUE(val);
-        if (val & LOCALTIMER_INTENABLE) {
-            if (!s->timer) {
-                s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                    bcm2836_control_local_timer_tick, s);
-            }
-            bcm2836_control_local_timer_set_next(s);
-        } else {
-            if (s->timer) {
-                timer_del(s->timer);
-                s->timer = NULL;
-            }
-            s->triggered = 0;
-        }
+        bcm2836_control_local_timer_control(s, val);
     } else if (offset == REG_LOCALTIMERACK) {
-        if (val & LOCALTIMER_INTFLAG) {
-            s->triggered = 0;
-        }
-        if (val & LOCALTIMER_RELOAD) {
-            bcm2836_control_local_timer_set_next(s);
-        }
+        bcm2836_control_local_timer_ack(s, val);
     } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
         s->timercontrol[(offset - REG_TIMERCONTROL) >> 2] = val & 0xff;
     } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
