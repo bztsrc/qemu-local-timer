@@ -20,7 +20,6 @@
 #include "qemu/osdep.h"
 #include "hw/intc/bcm2836_control.h"
 #include "qemu/log.h"
-#include "monitor/monitor.h"
 
 #define REG_GPU_ROUTE           0x0c
 #define REG_LOCALTIMERROUTING   0x24
@@ -287,12 +286,6 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
                       __func__, offset);
         return;
     }
-
-#ifdef DEBUG_LOCALTIMER
-    printf("bcm2836_control: local timer: period %d core%d/%s "
-        "triggered %d\n", s->period, s->route_localtimer & 3,
-        s->route_localtimer & 4 ? "FIQ" : "IRQ", s->triggered);
-#endif
 
     bcm2836_control_update(s);
 }
