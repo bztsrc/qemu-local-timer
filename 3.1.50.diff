@@ -1,5 +1,5 @@
 diff --git a/hw/intc/bcm2836_control.c b/hw/intc/bcm2836_control.c
-index cfa5bc7365..a7dbad2572 100644
+index cfa5bc7365..d090979aaf 100644
 --- a/hw/intc/bcm2836_control.c
 +++ b/hw/intc/bcm2836_control.c
 @@ -7,7 +7,11 @@
@@ -15,11 +15,8 @@ index cfa5bc7365..a7dbad2572 100644
   *
   * Ref:
   * https://www.raspberrypi.org/documentation/hardware/raspberrypi/bcm2836/QA7_rev3.4.pdf
-@@ -16,8 +20,12 @@
- #include "qemu/osdep.h"
- #include "hw/intc/bcm2836_control.h"
+@@ -18,6 +22,9 @@
  #include "qemu/log.h"
-+#include "monitor/monitor.h"
  
  #define REG_GPU_ROUTE           0x0c
 +#define REG_LOCALTIMERROUTING   0x24
@@ -28,7 +25,7 @@ index cfa5bc7365..a7dbad2572 100644
  #define REG_TIMERCONTROL        0x40
  #define REG_MBOXCONTROL         0x50
  #define REG_IRQSRC              0x60
-@@ -43,6 +51,13 @@
+@@ -43,6 +50,13 @@
  #define IRQ_TIMER       11
  #define IRQ_MAX         IRQ_TIMER
  
@@ -42,7 +39,7 @@ index cfa5bc7365..a7dbad2572 100644
  static void deliver_local(BCM2836ControlState *s, uint8_t core, uint8_t irq,
                            uint32_t controlreg, uint8_t controlidx)
  {
-@@ -78,6 +93,15 @@ static void bcm2836_control_update(BCM2836ControlState *s)
+@@ -78,6 +92,15 @@ static void bcm2836_control_update(BCM2836ControlState *s)
          s->fiqsrc[s->route_gpu_fiq] |= (uint32_t)1 << IRQ_GPU;
      }
  
@@ -58,7 +55,7 @@ index cfa5bc7365..a7dbad2572 100644
      for (i = 0; i < BCM2836_NCORES; i++) {
          /* handle local timer interrupts for this core */
          if (s->timerirqs[i]) {
-@@ -162,6 +186,30 @@ static void bcm2836_control_set_gpu_fiq(void *opaque, int irq, int level)
+@@ -162,6 +185,30 @@ static void bcm2836_control_set_gpu_fiq(void *opaque, int irq, int level)
      bcm2836_control_update(s);
  }
  
@@ -89,7 +86,7 @@ index cfa5bc7365..a7dbad2572 100644
  static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
  {
      BCM2836ControlState *s = opaque;
-@@ -170,6 +218,13 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
+@@ -170,6 +217,13 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
          assert(s->route_gpu_fiq < BCM2836_NCORES
                 && s->route_gpu_irq < BCM2836_NCORES);
          return ((uint32_t)s->route_gpu_fiq << 2) | s->route_gpu_irq;
@@ -103,7 +100,7 @@ index cfa5bc7365..a7dbad2572 100644
      } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
          return s->timercontrol[(offset - REG_TIMERCONTROL) >> 2];
      } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
-@@ -195,6 +250,30 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
+@@ -195,6 +249,30 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
      if (offset == REG_GPU_ROUTE) {
          s->route_gpu_irq = val & 0x3;
          s->route_gpu_fiq = (val >> 2) & 0x3;
@@ -134,20 +131,7 @@ index cfa5bc7365..a7dbad2572 100644
      } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
          s->timercontrol[(offset - REG_TIMERCONTROL) >> 2] = val & 0xff;
      } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
-@@ -209,6 +288,12 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
-         return;
-     }
- 
-+#ifdef DEBUG_LOCALTIMER
-+    printf("bcm2836_control: local timer: period %d core%d/%s "
-+        "triggered %d\n", s->period, s->route_localtimer & 3,
-+        s->route_localtimer & 4 ? "FIQ" : "IRQ", s->triggered);
-+#endif
-+
-     bcm2836_control_update(s);
- }
- 
-@@ -227,6 +312,13 @@ static void bcm2836_control_reset(DeviceState *d)
+@@ -227,6 +305,13 @@ static void bcm2836_control_reset(DeviceState *d)
  
      s->route_gpu_irq = s->route_gpu_fiq = 0;
  
