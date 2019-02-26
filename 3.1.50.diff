@@ -1,0 +1,198 @@
+diff --git a/hw/intc/bcm2836_control.c b/hw/intc/bcm2836_control.c
+index cfa5bc7365..a7dbad2572 100644
+--- a/hw/intc/bcm2836_control.c
++++ b/hw/intc/bcm2836_control.c
+@@ -7,7 +7,11 @@
+  * This code is licensed under the GNU GPLv2 and later.
+  *
+  * At present, only implements interrupt routing, and mailboxes (i.e.,
+- * not local timer, PMU interrupt, or AXI counters).
++ * not PMU interrupt, or AXI counters).
++ *
++ * 64-bit ARM Local Timer Copyright (c) 2019. Zoltán Baldaszti
++ * The IRQ_TIMER support is still very basic, does not handle timer access,
++ * and such there's no point in enabling it without the interrupt flag set.
+  *
+  * Ref:
+  * https://www.raspberrypi.org/documentation/hardware/raspberrypi/bcm2836/QA7_rev3.4.pdf
+@@ -16,8 +20,12 @@
+ #include "qemu/osdep.h"
+ #include "hw/intc/bcm2836_control.h"
+ #include "qemu/log.h"
++#include "monitor/monitor.h"
+ 
+ #define REG_GPU_ROUTE           0x0c
++#define REG_LOCALTIMERROUTING   0x24
++#define REG_LOCALTIMERCONTROL   0x34
++#define REG_LOCALTIMERACK       0x38
+ #define REG_TIMERCONTROL        0x40
+ #define REG_MBOXCONTROL         0x50
+ #define REG_IRQSRC              0x60
+@@ -43,6 +51,13 @@
+ #define IRQ_TIMER       11
+ #define IRQ_MAX         IRQ_TIMER
+ 
++#define LOCALTIMER_FREQ      38400000
++#define LOCALTIMER_INTFLAG   (1 << 31)
++#define LOCALTIMER_RELOAD    (1 << 30)
++#define LOCALTIMER_INTENABLE (1 << 29)
++#define LOCALTIMER_ENABLE    (1 << 28)
++#define LOCALTIMER_VALUE(x)  ((x) & 0xfffffff)
++
+ static void deliver_local(BCM2836ControlState *s, uint8_t core, uint8_t irq,
+                           uint32_t controlreg, uint8_t controlidx)
+ {
+@@ -78,6 +93,15 @@ static void bcm2836_control_update(BCM2836ControlState *s)
+         s->fiqsrc[s->route_gpu_fiq] |= (uint32_t)1 << IRQ_GPU;
+     }
+ 
++    /* handle THE local timer interrupt for one of the cores' IRQ/FIQ */
++    if (s->triggered) {
++        if (s->route_localtimer & 4) {
++            s->fiqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
++        } else {
++            s->irqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
++        }
++    }
++
+     for (i = 0; i < BCM2836_NCORES; i++) {
+         /* handle local timer interrupts for this core */
+         if (s->timerirqs[i]) {
+@@ -162,6 +186,30 @@ static void bcm2836_control_set_gpu_fiq(void *opaque, int irq, int level)
+     bcm2836_control_update(s);
+ }
+ 
++static void bcm2836_control_local_timer_set_next(void *opaque)
++{
++    BCM2836ControlState *s = opaque;
++    uint64_t next_event;
++
++    assert(s->period > 0);
++
++    next_event = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++        (NANOSECONDS_PER_SECOND * s->period / LOCALTIMER_FREQ);
++    timer_mod(s->timer, next_event);
++}
++
++static void bcm2836_control_local_timer_tick(void *opaque)
++{
++    BCM2836ControlState *s = opaque;
++
++    bcm2836_control_local_timer_set_next(s);
++
++    if (!s->triggered) {
++        s->triggered = 1;
++        bcm2836_control_update(s);
++    }
++}
++
+ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
+ {
+     BCM2836ControlState *s = opaque;
+@@ -170,6 +218,13 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
+         assert(s->route_gpu_fiq < BCM2836_NCORES
+                && s->route_gpu_irq < BCM2836_NCORES);
+         return ((uint32_t)s->route_gpu_fiq << 2) | s->route_gpu_irq;
++    } else if (offset == REG_LOCALTIMERROUTING) {
++        return s->route_localtimer;
++    } else if (offset == REG_LOCALTIMERCONTROL) {
++        return s->period | (s->timer ? LOCALTIMER_ENABLE | LOCALTIMER_INTENABLE : 0) |
++            (s->triggered ? LOCALTIMER_INTFLAG : 0);
++    } else if (offset == REG_LOCALTIMERACK) {
++        return 0;
+     } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
+         return s->timercontrol[(offset - REG_TIMERCONTROL) >> 2];
+     } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
+@@ -195,6 +250,30 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
+     if (offset == REG_GPU_ROUTE) {
+         s->route_gpu_irq = val & 0x3;
+         s->route_gpu_fiq = (val >> 2) & 0x3;
++    } else if (offset == REG_LOCALTIMERROUTING) {
++        s->route_localtimer = val & 7;
++    } else if (offset == REG_LOCALTIMERCONTROL) {
++        s->period = LOCALTIMER_VALUE(val);
++        if (val & LOCALTIMER_INTENABLE) {
++            if (!s->timer) {
++                s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                    bcm2836_control_local_timer_tick, s);
++            }
++            bcm2836_control_local_timer_set_next(s);
++        } else {
++            if (s->timer) {
++                timer_del(s->timer);
++                s->timer = NULL;
++            }
++            s->triggered = 0;
++        }
++    } else if (offset == REG_LOCALTIMERACK) {
++        if (val & LOCALTIMER_INTFLAG) {
++            s->triggered = 0;
++        }
++        if (val & LOCALTIMER_RELOAD) {
++            bcm2836_control_local_timer_set_next(s);
++        }
+     } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
+         s->timercontrol[(offset - REG_TIMERCONTROL) >> 2] = val & 0xff;
+     } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
+@@ -209,6 +288,12 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
+         return;
+     }
+ 
++#ifdef DEBUG_LOCALTIMER
++    printf("bcm2836_control: local timer: period %d core%d/%s "
++        "triggered %d\n", s->period, s->route_localtimer & 3,
++        s->route_localtimer & 4 ? "FIQ" : "IRQ", s->triggered);
++#endif
++
+     bcm2836_control_update(s);
+ }
+ 
+@@ -227,6 +312,13 @@ static void bcm2836_control_reset(DeviceState *d)
+ 
+     s->route_gpu_irq = s->route_gpu_fiq = 0;
+ 
++    s->route_localtimer = s->triggered = 0;
++    s->period = 0;
++    if(s->timer) {
++        timer_del(s->timer);
++        s->timer = NULL;
++    }
++
+     for (i = 0; i < BCM2836_NCORES; i++) {
+         s->timercontrol[i] = 0;
+         s->mailboxcontrol[i] = 0;
+diff --git a/include/hw/intc/bcm2836_control.h b/include/hw/intc/bcm2836_control.h
+index 613f3c4186..873bd52253 100644
+--- a/include/hw/intc/bcm2836_control.h
++++ b/include/hw/intc/bcm2836_control.h
+@@ -5,6 +5,9 @@
+  * Rasperry Pi 2 emulation and refactoring Copyright (c) 2015, Microsoft
+  * Written by Andrew Baumann
+  *
++ * 64-bit ARM Local Timer Copyright (c) 2019. Zoltán Baldaszti
++ * Added basic IRQ_TIMER interrupt support
++ *
+  * This code is licensed under the GNU GPLv2 and later.
+  */
+ 
+@@ -12,6 +15,7 @@
+ #define BCM2836_CONTROL_H
+ 
+ #include "hw/sysbus.h"
++#include "qemu/timer.h"
+ 
+ /* 4 mailboxes per core, for 16 total */
+ #define BCM2836_NCORES 4
+@@ -39,6 +43,12 @@ typedef struct BCM2836ControlState {
+     bool gpu_irq, gpu_fiq;
+     uint8_t timerirqs[BCM2836_NCORES];
+ 
++    /* local timer */
++    uint8_t route_localtimer;
++    uint32_t period;
++    bool triggered;
++    QEMUTimer *timer;
++
+     /* interrupt source registers, post-routing (also input-derived; visible) */
+     uint32_t irqsrc[BCM2836_NCORES];
+     uint32_t fiqsrc[BCM2836_NCORES];
