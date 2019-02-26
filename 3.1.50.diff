@@ -1,5 +1,5 @@
 diff --git a/hw/intc/bcm2836_control.c b/hw/intc/bcm2836_control.c
-index cfa5bc7365..d090979aaf 100644
+index cfa5bc7365..fbd31de0f1 100644
 --- a/hw/intc/bcm2836_control.c
 +++ b/hw/intc/bcm2836_control.c
 @@ -7,7 +7,11 @@
@@ -55,7 +55,7 @@ index cfa5bc7365..d090979aaf 100644
      for (i = 0; i < BCM2836_NCORES; i++) {
          /* handle local timer interrupts for this core */
          if (s->timerirqs[i]) {
-@@ -162,6 +185,30 @@ static void bcm2836_control_set_gpu_fiq(void *opaque, int irq, int level)
+@@ -162,6 +185,62 @@ static void bcm2836_control_set_gpu_fiq(void *opaque, int irq, int level)
      bcm2836_control_update(s);
  }
  
@@ -83,55 +83,70 @@ index cfa5bc7365..d090979aaf 100644
 +    }
 +}
 +
++static void bcm2836_control_local_timer_control(void *opaque, uint32_t val)
++{
++    BCM2836ControlState *s = opaque;
++
++    s->period = LOCALTIMER_VALUE(val);
++    if (val & LOCALTIMER_INTENABLE) {
++        if (!s->timer) {
++            s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
++                bcm2836_control_local_timer_tick, s);
++        }
++        bcm2836_control_local_timer_set_next(s);
++    } else {
++        if (s->timer) {
++            timer_del(s->timer);
++            s->timer = NULL;
++        }
++        s->triggered = 0;
++    }
++}
++
++static void bcm2836_control_local_timer_ack(void *opaque, uint32_t val)
++{
++    BCM2836ControlState *s = opaque;
++
++    if (val & LOCALTIMER_INTFLAG) {
++        s->triggered = 0;
++    }
++    if (val & LOCALTIMER_RELOAD) {
++        bcm2836_control_local_timer_set_next(s);
++    }
++}
++
  static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
  {
      BCM2836ControlState *s = opaque;
-@@ -170,6 +217,13 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
+@@ -170,6 +249,14 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
          assert(s->route_gpu_fiq < BCM2836_NCORES
                 && s->route_gpu_irq < BCM2836_NCORES);
          return ((uint32_t)s->route_gpu_fiq << 2) | s->route_gpu_irq;
 +    } else if (offset == REG_LOCALTIMERROUTING) {
 +        return s->route_localtimer;
 +    } else if (offset == REG_LOCALTIMERCONTROL) {
-+        return s->period | (s->timer ? LOCALTIMER_ENABLE | LOCALTIMER_INTENABLE : 0) |
++        return s->period |
++            (s->timer ? LOCALTIMER_ENABLE | LOCALTIMER_INTENABLE : 0) |
 +            (s->triggered ? LOCALTIMER_INTFLAG : 0);
 +    } else if (offset == REG_LOCALTIMERACK) {
 +        return 0;
      } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
          return s->timercontrol[(offset - REG_TIMERCONTROL) >> 2];
      } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
-@@ -195,6 +249,30 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
+@@ -195,6 +282,12 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
      if (offset == REG_GPU_ROUTE) {
          s->route_gpu_irq = val & 0x3;
          s->route_gpu_fiq = (val >> 2) & 0x3;
 +    } else if (offset == REG_LOCALTIMERROUTING) {
 +        s->route_localtimer = val & 7;
 +    } else if (offset == REG_LOCALTIMERCONTROL) {
-+        s->period = LOCALTIMER_VALUE(val);
-+        if (val & LOCALTIMER_INTENABLE) {
-+            if (!s->timer) {
-+                s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-+                    bcm2836_control_local_timer_tick, s);
-+            }
-+            bcm2836_control_local_timer_set_next(s);
-+        } else {
-+            if (s->timer) {
-+                timer_del(s->timer);
-+                s->timer = NULL;
-+            }
-+            s->triggered = 0;
-+        }
++        bcm2836_control_local_timer_control(s, val);
 +    } else if (offset == REG_LOCALTIMERACK) {
-+        if (val & LOCALTIMER_INTFLAG) {
-+            s->triggered = 0;
-+        }
-+        if (val & LOCALTIMER_RELOAD) {
-+            bcm2836_control_local_timer_set_next(s);
-+        }
++        bcm2836_control_local_timer_ack(s, val);
      } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
          s->timercontrol[(offset - REG_TIMERCONTROL) >> 2] = val & 0xff;
      } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
-@@ -227,6 +305,13 @@ static void bcm2836_control_reset(DeviceState *d)
+@@ -227,6 +320,13 @@ static void bcm2836_control_reset(DeviceState *d)
  
      s->route_gpu_irq = s->route_gpu_fiq = 0;
  
