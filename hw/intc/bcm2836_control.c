@@ -9,9 +9,11 @@
  * At present, only implements interrupt routing, and mailboxes (i.e.,
  * not PMU interrupt, or AXI counters).
  *
- * 64-bit ARM Local Timer Copyright (c) 2019. Zoltán Baldaszti
- * The IRQ_TIMER support is still very basic, does not handle timer access,
- * and such there's no point in enabling it without the interrupt flag set.
+ * ARM Local Timer IRQ Copyright (c) 2019. Zoltán Baldaszti
+ * The IRQ_TIMER support is still very basic, does not provide timer counter
+ * access and other timer features, it just generates periodic IRQs. But it
+ * still requires not only the interrupt enable, but the timer enable bit to
+ * be set.
  *
  * Ref:
  * https://www.raspberrypi.org/documentation/hardware/raspberrypi/bcm2836/QA7_rev3.4.pdf
@@ -93,7 +95,7 @@ static void bcm2836_control_update(BCM2836ControlState *s)
     }
 
     /* handle THE local timer interrupt for one of the cores' IRQ/FIQ */
-    if (s->triggered) {
+    if (s->local_timer_control & LOCALTIMER_INTFLAG) {
         if (s->route_localtimer & 4) {
             s->fiqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
         } else {
@@ -190,11 +192,12 @@ static void bcm2836_control_local_timer_set_next(void *opaque)
     BCM2836ControlState *s = opaque;
     uint64_t next_event;
 
-    assert(s->period > 0);
+    assert(LOCALTIMER_VALUE(s->local_timer_control) > 0);
 
     next_event = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-        (NANOSECONDS_PER_SECOND * s->period / LOCALTIMER_FREQ);
-    timer_mod(s->timer, next_event);
+        muldiv64(LOCALTIMER_VALUE(s->local_timer_control),
+            NANOSECONDS_PER_SECOND, LOCALTIMER_FREQ);
+    timer_mod(&s->timer, next_event);
 }
 
 static void bcm2836_control_local_timer_tick(void *opaque)
@@ -203,8 +206,8 @@ static void bcm2836_control_local_timer_tick(void *opaque)
 
     bcm2836_control_local_timer_set_next(s);
 
-    if (!s->triggered) {
-        s->triggered = 1;
+    if (!(s->local_timer_control & LOCALTIMER_INTFLAG)) {
+        s->local_timer_control |= LOCALTIMER_INTFLAG;
         bcm2836_control_update(s);
     }
 }
@@ -213,19 +216,12 @@ static void bcm2836_control_local_timer_control(void *opaque, uint32_t val)
 {
     BCM2836ControlState *s = opaque;
 
-    s->period = LOCALTIMER_VALUE(val);
-    if (val & LOCALTIMER_INTENABLE) {
-        if (!s->timer) {
-            s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                bcm2836_control_local_timer_tick, s);
-        }
+    s->local_timer_control = val;
+    if ((val & LOCALTIMER_ENABLE) && (val & LOCALTIMER_INTENABLE)) {
         bcm2836_control_local_timer_set_next(s);
     } else {
-        if (s->timer) {
-            timer_del(s->timer);
-            s->timer = NULL;
-        }
-        s->triggered = 0;
+        timer_del(&s->timer);
+        s->local_timer_control &= ~LOCALTIMER_INTFLAG;
     }
 }
 
@@ -234,10 +230,12 @@ static void bcm2836_control_local_timer_ack(void *opaque, uint32_t val)
     BCM2836ControlState *s = opaque;
 
     if (val & LOCALTIMER_INTFLAG) {
-        s->triggered = 0;
+        s->local_timer_control &= ~LOCALTIMER_INTFLAG;
     }
-    if (val & LOCALTIMER_RELOAD) {
-        bcm2836_control_local_timer_set_next(s);
+    if ((val & LOCALTIMER_RELOAD) &&
+        (s->local_timer_control & LOCALTIMER_ENABLE) &&
+        (s->local_timer_control & LOCALTIMER_INTENABLE)) {
+            bcm2836_control_local_timer_set_next(s);
     }
 }
 
@@ -252,9 +250,7 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
     } else if (offset == REG_LOCALTIMERROUTING) {
         return s->route_localtimer;
     } else if (offset == REG_LOCALTIMERCONTROL) {
-        return s->period |
-            (s->timer ? LOCALTIMER_ENABLE | LOCALTIMER_INTENABLE : 0) |
-            (s->triggered ? LOCALTIMER_INTFLAG : 0);
+        return s->local_timer_control;
     } else if (offset == REG_LOCALTIMERACK) {
         return 0;
     } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
@@ -320,12 +316,9 @@ static void bcm2836_control_reset(DeviceState *d)
 
     s->route_gpu_irq = s->route_gpu_fiq = 0;
 
-    s->route_localtimer = s->triggered = 0;
-    s->period = 0;
-    if(s->timer) {
-        timer_del(s->timer);
-        s->timer = NULL;
-    }
+    timer_del(&s->timer);
+    s->route_localtimer = 0;
+    s->local_timer_control = 0;
 
     for (i = 0; i < BCM2836_NCORES; i++) {
         s->timercontrol[i] = 0;
@@ -363,11 +356,14 @@ static void bcm2836_control_init(Object *obj)
     /* outputs to CPU cores */
     qdev_init_gpio_out_named(dev, s->irq, "irq", BCM2836_NCORES);
     qdev_init_gpio_out_named(dev, s->fiq, "fiq", BCM2836_NCORES);
+
+    /* create a qemu virtual timer */
+    timer_init_ns(&s->timer, QEMU_CLOCK_VIRTUAL, bcm2836_control_local_timer_tick, s);
 }
 
 static const VMStateDescription vmstate_bcm2836_control = {
     .name = TYPE_BCM2836_CONTROL,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (VMStateField[]) {
         VMSTATE_UINT32_ARRAY(mailboxes, BCM2836ControlState,
@@ -377,6 +373,9 @@ static const VMStateDescription vmstate_bcm2836_control = {
         VMSTATE_UINT32_ARRAY(timercontrol, BCM2836ControlState, BCM2836_NCORES),
         VMSTATE_UINT32_ARRAY(mailboxcontrol, BCM2836ControlState,
                              BCM2836_NCORES),
+        VMSTATE_TIMER_V(timer, BCM2836ControlState, 2),
+        VMSTATE_UINT32_V(local_timer_control, BCM2836ControlState, 2),
+        VMSTATE_UINT8_V(route_localtimer, BCM2836ControlState, 2),
         VMSTATE_END_OF_LIST()
     }
 };

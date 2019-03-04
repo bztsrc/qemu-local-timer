@@ -44,10 +44,9 @@ typedef struct BCM2836ControlState {
     uint8_t timerirqs[BCM2836_NCORES];
 
     /* local timer */
+    QEMUTimer timer;
+    uint32_t local_timer_control;
     uint8_t route_localtimer;
-    uint32_t period;
-    bool triggered;
-    QEMUTimer *timer;
 
     /* interrupt source registers, post-routing (also input-derived; visible) */
     uint32_t irqsrc[BCM2836_NCORES];
