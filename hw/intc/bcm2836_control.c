@@ -95,12 +95,14 @@ static void bcm2836_control_update(BCM2836ControlState *s)
     }
 
     /* handle THE local timer interrupt for one of the cores' IRQ/FIQ */
-    if (s->local_timer_control & LOCALTIMER_INTFLAG) {
+    if ((s->local_timer_control & LOCALTIMER_INTENABLE) &&
+        (s->local_timer_control & LOCALTIMER_INTFLAG)) {
         if (s->route_localtimer & 4) {
             s->fiqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
         } else {
             s->irqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
         }
+        s->local_timer_control &= ~LOCALTIMER_INTENABLE;
     }
 
     for (i = 0; i < BCM2836_NCORES; i++) {
@@ -206,22 +208,19 @@ static void bcm2836_control_local_timer_tick(void *opaque)
 
     bcm2836_control_local_timer_set_next(s);
 
-    if (!(s->local_timer_control & LOCALTIMER_INTFLAG)) {
-        s->local_timer_control |= LOCALTIMER_INTFLAG;
-        bcm2836_control_update(s);
-    }
+    s->local_timer_control |= LOCALTIMER_INTFLAG;
+    bcm2836_control_update(s);
 }
 
 static void bcm2836_control_local_timer_control(void *opaque, uint32_t val)
 {
     BCM2836ControlState *s = opaque;
 
-    s->local_timer_control = val;
-    if ((val & LOCALTIMER_ENABLE) && (val & LOCALTIMER_INTENABLE)) {
+    s->local_timer_control = val & ~LOCALTIMER_INTFLAG;
+    if (val & LOCALTIMER_ENABLE) {
         bcm2836_control_local_timer_set_next(s);
     } else {
         timer_del(&s->timer);
-        s->local_timer_control &= ~LOCALTIMER_INTFLAG;
     }
 }
 
@@ -230,11 +229,11 @@ static void bcm2836_control_local_timer_ack(void *opaque, uint32_t val)
     BCM2836ControlState *s = opaque;
 
     if (val & LOCALTIMER_INTFLAG) {
+        s->local_timer_control |= LOCALTIMER_INTENABLE;
         s->local_timer_control &= ~LOCALTIMER_INTFLAG;
     }
     if ((val & LOCALTIMER_RELOAD) &&
-        (s->local_timer_control & LOCALTIMER_ENABLE) &&
-        (s->local_timer_control & LOCALTIMER_INTENABLE)) {
+        (s->local_timer_control & LOCALTIMER_ENABLE)) {
             bcm2836_control_local_timer_set_next(s);
     }
 }

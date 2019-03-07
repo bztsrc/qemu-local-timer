@@ -5,7 +5,7 @@
  * Rasperry Pi 2 emulation and refactoring Copyright (c) 2015, Microsoft
  * Written by Andrew Baumann
  *
- * 64-bit ARM Local Timer Copyright (c) 2019. Zoltán Baldaszti
+ * ARM Local Timer IRQ Copyright (c) 2019. Zoltán Baldaszti
  * Added basic IRQ_TIMER interrupt support
  *
  * This code is licensed under the GNU GPLv2 and later.
