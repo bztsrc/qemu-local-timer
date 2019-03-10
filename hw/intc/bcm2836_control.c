@@ -97,12 +97,12 @@ static void bcm2836_control_update(BCM2836ControlState *s)
     /* handle THE local timer interrupt for one of the cores' IRQ/FIQ */
     if ((s->local_timer_control & LOCALTIMER_INTENABLE) &&
         (s->local_timer_control & LOCALTIMER_INTFLAG)) {
+        /* note: this will keep firing the IRQ as Peter asked */
         if (s->route_localtimer & 4) {
             s->fiqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
         } else {
             s->irqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
         }
-        s->local_timer_control &= ~LOCALTIMER_INTENABLE;
     }
 
     for (i = 0; i < BCM2836_NCORES; i++) {
@@ -216,7 +216,7 @@ static void bcm2836_control_local_timer_control(void *opaque, uint32_t val)
 {
     BCM2836ControlState *s = opaque;
 
-    s->local_timer_control = val & ~LOCALTIMER_INTFLAG;
+    s->local_timer_control = val;
     if (val & LOCALTIMER_ENABLE) {
         bcm2836_control_local_timer_set_next(s);
     } else {
@@ -229,7 +229,6 @@ static void bcm2836_control_local_timer_ack(void *opaque, uint32_t val)
     BCM2836ControlState *s = opaque;
 
     if (val & LOCALTIMER_INTFLAG) {
-        s->local_timer_control |= LOCALTIMER_INTENABLE;
         s->local_timer_control &= ~LOCALTIMER_INTFLAG;
     }
     if ((val & LOCALTIMER_RELOAD) &&
