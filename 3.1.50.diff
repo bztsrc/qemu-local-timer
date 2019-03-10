@@ -1,5 +1,5 @@
 diff --git a/hw/intc/bcm2836_control.c b/hw/intc/bcm2836_control.c
-index cfa5bc7365..d75dedbf20 100644
+index cfa5bc7365..82d2f51ffe 100644
 --- a/hw/intc/bcm2836_control.c
 +++ b/hw/intc/bcm2836_control.c
 @@ -7,7 +7,13 @@
@@ -48,18 +48,18 @@ index cfa5bc7365..d75dedbf20 100644
 +    /* handle THE local timer interrupt for one of the cores' IRQ/FIQ */
 +    if ((s->local_timer_control & LOCALTIMER_INTENABLE) &&
 +        (s->local_timer_control & LOCALTIMER_INTFLAG)) {
++        /* note: this will keep firing the IRQ as Peter asked */
 +        if (s->route_localtimer & 4) {
 +            s->fiqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
 +        } else {
 +            s->irqsrc[(s->route_localtimer & 3)] |= (uint32_t)1 << IRQ_TIMER;
 +        }
-+        s->local_timer_control &= ~LOCALTIMER_INTENABLE;
 +    }
 +
      for (i = 0; i < BCM2836_NCORES; i++) {
          /* handle local timer interrupts for this core */
          if (s->timerirqs[i]) {
-@@ -162,6 +189,55 @@ static void bcm2836_control_set_gpu_fiq(void *opaque, int irq, int level)
+@@ -162,6 +189,54 @@ static void bcm2836_control_set_gpu_fiq(void *opaque, int irq, int level)
      bcm2836_control_update(s);
  }
  
@@ -90,7 +90,7 @@ index cfa5bc7365..d75dedbf20 100644
 +{
 +    BCM2836ControlState *s = opaque;
 +
-+    s->local_timer_control = val & ~LOCALTIMER_INTFLAG;
++    s->local_timer_control = val;
 +    if (val & LOCALTIMER_ENABLE) {
 +        bcm2836_control_local_timer_set_next(s);
 +    } else {
@@ -103,7 +103,6 @@ index cfa5bc7365..d75dedbf20 100644
 +    BCM2836ControlState *s = opaque;
 +
 +    if (val & LOCALTIMER_INTFLAG) {
-+        s->local_timer_control |= LOCALTIMER_INTENABLE;
 +        s->local_timer_control &= ~LOCALTIMER_INTFLAG;
 +    }
 +    if ((val & LOCALTIMER_RELOAD) &&
@@ -115,7 +114,7 @@ index cfa5bc7365..d75dedbf20 100644
  static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
  {
      BCM2836ControlState *s = opaque;
-@@ -170,6 +246,12 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
+@@ -170,6 +245,12 @@ static uint64_t bcm2836_control_read(void *opaque, hwaddr offset, unsigned size)
          assert(s->route_gpu_fiq < BCM2836_NCORES
                 && s->route_gpu_irq < BCM2836_NCORES);
          return ((uint32_t)s->route_gpu_fiq << 2) | s->route_gpu_irq;
@@ -128,7 +127,7 @@ index cfa5bc7365..d75dedbf20 100644
      } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
          return s->timercontrol[(offset - REG_TIMERCONTROL) >> 2];
      } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
-@@ -195,6 +277,12 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
+@@ -195,6 +276,12 @@ static void bcm2836_control_write(void *opaque, hwaddr offset,
      if (offset == REG_GPU_ROUTE) {
          s->route_gpu_irq = val & 0x3;
          s->route_gpu_fiq = (val >> 2) & 0x3;
@@ -141,7 +140,7 @@ index cfa5bc7365..d75dedbf20 100644
      } else if (offset >= REG_TIMERCONTROL && offset < REG_MBOXCONTROL) {
          s->timercontrol[(offset - REG_TIMERCONTROL) >> 2] = val & 0xff;
      } else if (offset >= REG_MBOXCONTROL && offset < REG_IRQSRC) {
-@@ -227,6 +315,10 @@ static void bcm2836_control_reset(DeviceState *d)
+@@ -227,6 +314,10 @@ static void bcm2836_control_reset(DeviceState *d)
  
      s->route_gpu_irq = s->route_gpu_fiq = 0;
  
@@ -152,7 +151,7 @@ index cfa5bc7365..d75dedbf20 100644
      for (i = 0; i < BCM2836_NCORES; i++) {
          s->timercontrol[i] = 0;
          s->mailboxcontrol[i] = 0;
-@@ -263,11 +355,14 @@ static void bcm2836_control_init(Object *obj)
+@@ -263,11 +354,14 @@ static void bcm2836_control_init(Object *obj)
      /* outputs to CPU cores */
      qdev_init_gpio_out_named(dev, s->irq, "irq", BCM2836_NCORES);
      qdev_init_gpio_out_named(dev, s->fiq, "fiq", BCM2836_NCORES);
@@ -168,7 +167,7 @@ index cfa5bc7365..d75dedbf20 100644
      .minimum_version_id = 1,
      .fields = (VMStateField[]) {
          VMSTATE_UINT32_ARRAY(mailboxes, BCM2836ControlState,
-@@ -277,6 +372,9 @@ static const VMStateDescription vmstate_bcm2836_control = {
+@@ -277,6 +371,9 @@ static const VMStateDescription vmstate_bcm2836_control = {
          VMSTATE_UINT32_ARRAY(timercontrol, BCM2836ControlState, BCM2836_NCORES),
          VMSTATE_UINT32_ARRAY(mailboxcontrol, BCM2836ControlState,
                               BCM2836_NCORES),
