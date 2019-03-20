@@ -1,6 +1,8 @@
 QEMU ARM Control Local Timer Periodic IRQ support
 =================================================
 
+*IMPORTANT NOTE: as of Mar 15 2019, this has been merged with qemu mainline, so no need to manually apply this patch any more.*
+
 This patch adds the ARM Control Local Timer (see [BCM2836 QA7](https://www.raspberrypi.org/documentation/hardware/raspberrypi/bcm2836/QA7_rev3.4.pdf)
 section 4.11 "Local timer" page 17) periodic IRQ feature to qemu. This patch is provided as-is, without any kind of warranty in the hope that it will be useful.
 
